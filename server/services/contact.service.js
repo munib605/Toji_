@@ -18,8 +18,12 @@ export const contactService = {
 
   /**
    * Persists the message first (the durable, user-facing outcome), then
-   * fires both notification emails without blocking or failing the request
-   * if the mail provider has a hiccup.
+   * sends both notification emails. These are awaited (not fire-and-forget)
+   * because on serverless platforms like Vercel the function's execution
+   * context is frozen as soon as a response is sent — any un-awaited
+   * promise still in flight (like an SMTP handshake) gets killed before it
+   * completes. Failures here are still caught so a mail hiccup never fails
+   * the request.
    */
   async submit({ name, email, subject, message }, meta = {}) {
     const saved = await contactRepository.create({
@@ -30,15 +34,15 @@ export const contactService = {
       ipAddress: meta.ipAddress,
     })
 
-    Promise.allSettled([
+    const results = await Promise.allSettled([
       emailService.sendContactConfirmation({ name, email, subject }),
       emailService.sendAdminNotification({ name, email, subject, message }),
-    ]).then((results) => {
-      results.forEach((r, i) => {
-        if (r.status === 'rejected') {
-          logger.warn(`Contact email ${i === 0 ? 'confirmation' : 'notification'} failed: ${r.reason?.message}`)
-        }
-      })
+    ])
+
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        logger.warn(`Contact email ${i === 0 ? 'confirmation' : 'notification'} failed: ${r.reason?.message}`)
+      }
     })
 
     return saved
